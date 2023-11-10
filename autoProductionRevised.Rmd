@@ -1,0 +1,351 @@
+---
+title: "Auto Production in the United States: Time Series Analysis"
+author: "Paige Gonzales"
+date: '2023-07-28'
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+
+#Load necessary libraries
+library(dplyr)
+library(forecast)
+library(astsa)
+library(TSA)
+library(zoo)
+library(ggplot2)
+library(scales)
+
+#Suppress warnings and messages
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+```
+
+# 1. Original forecast as of December 2022
+
+## a. Read in data
+
+```{r}
+
+#Load the data file
+autoProd <- read.csv("DAUPNSAOriginal.csv")
+
+#Verify header and dimensions
+head(autoProd)
+dim(autoProd)
+
+#Check for any missing values
+sum(is.na(autoProd))
+
+```
+
+## b. Convert to time series data
+
+```{r}
+
+#Change the data to date format
+autoProd$DATE <- as.Date(autoProd$DATE)
+
+#Convert to time series
+autoProdTS <- ts(data=autoProd$DAUPNSA,frequency=12,start=c(1993,1),end=c(2022,9))
+
+#Plot time series for visualizing
+ts.plot(autoProdTS, ylab="Domestic Auto Production-Thousand Units")
+
+```
+
+## c. Check for stationarity
+
+```{r}
+
+#Plot ACF of original data
+#Notice not stationary
+#Time series plot shows a trend and non-constant variance
+acf2(autoProdTS)
+
+#Stabilize variance using log 
+logCars <- log(autoProdTS)
+
+#Re-check time series plot
+ts.plot(logCars, ylab="Domestic Auto Production-Thousand Units")
+
+#Re-check ACF plot
+acf2(logCars)
+
+#Remove trend by first order differencing
+detrendCars <- diff(logCars)
+
+#Check time series plot again
+ts.plot(detrendCars, ylab="Domestic Auto Production-Thousand Units")
+
+#Check ACF/PACF again
+#Non-stationary due to seasonality
+acf2(detrendCars)  
+
+#Seasonality check - shows yearly seasonality
+ggseasonplot(autoProdTS, main = "Seasonal Plot of Domestic Auto Production", ylab = "Production (Thousands)")
+
+#Seasonal differencing added to ACF plot
+acf2(diff(detrendCars,12), 60)
+
+```
+
+## d. Seasonal modeling (SARIMA) and forecast
+
+```{r}
+
+#SARIMA model and diagnostics
+sarima((logCars),0,1,2,0,1,1,12)
+
+#Suggested model by autoarima() and diagnostics
+auto.arima(logCars)
+sarima(logCars,1,1,1,0,0,2,12)
+
+#Forecast for next 12 months using user created SARIMA model 
+forecastOriginal <- sarima.for(autoProdTS,12,0,1,2,0,1,1,12)
+
+#Predictions for next 12 months (starting (October 2022))
+predOriginal <- forecastOriginal$pred
+
+```
+
+# 2. Compare originally predicted values to actual values from October 2022 to May 2023
+
+## a. Read in data
+
+```{r}
+
+#Load the data file
+autoProdUpdate <- read.csv("DAUPNSAUpdated.csv")
+
+#Verify header and dimensions
+head(autoProdUpdate)
+dim(autoProdUpdate)
+
+#Check for any missing values
+sum(is.na(autoProdUpdate))
+
+```
+
+## b. Convert new data to time series
+
+```{r}
+
+#Convert to date
+autoProdUpdate$DATE <- as.Date(autoProdUpdate$DATE)
+
+#Change to time series data
+autoProdUpdateTS <- ts(data=autoProdUpdate$DAUPNSA,frequency=12,start=c(1993,1),end=c(2023,5))
+
+```
+
+## c. Compare new data to originally predicted values
+
+```{r}
+
+#Select only values predicted originally that have values that are currently available (October 2022 to May 2022)
+actualValues <- window(autoProdUpdateTS, start = 2022 + 9/12, end = 2023 + 4/12)
+predOriginalValues <- window(predOriginal, start = 2022 + 9/12, end = 2023 + 4/12)
+
+#Calculate percent difference between predicted and actual values
+percentDiff <- ((predOriginalValues - actualValues)/actualValues)*100
+
+# Data frame for plotting
+data <- data.frame(
+  time = as.Date(time(actualValues)),
+  predicted = predOriginalValues,
+  actual = actualValues,
+  percent_diff = percentDiff
+)
+
+#Manually set colors for plot
+colors <- c("Actual" = "blue", "Predicted" = "red")
+
+#Plot predicted to actual for original project
+ggplot(data, aes(x = time)) +
+  geom_line(aes(y = predicted, color = "Predicted"), linetype = 2) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  geom_point(aes(y = predicted, color = "Predicted"), size = 2) +
+  geom_point(aes(y = actual, color = "Actual"), size = 2) +
+  geom_text(aes(y = predicted, label = paste0(round(percent_diff, 2), "%")), nudge_y = 12, nudge_x = 5, color = "red", size = 3, check_overlap = TRUE) +
+  labs(title = "U.S. Domestic Auto Prediction - Predicted vs. Actual", x = "Month/Day", y = "Value", color = "Legend") +
+  theme_classic() + 
+  theme(plot.margin = margin(40, 30, 30, 30), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(labels = date_format("%b %y"), breaks = "1 month") + 
+  scale_color_manual(values = colors)
+
+```
+
+# 3. Adjustment for COVID-19 outliers 
+
+## a. Remove outliers
+
+```{r}
+
+#Make a copy of the original dataset 
+autoProdCOVIDTS <- autoProdTS
+
+#Replace two major outliers due to COVID with NA
+autoProdCOVIDTS[328] <- NA
+autoProdCOVIDTS[329] <- NA
+
+#Smooth missing values - library(zoo)
+autoProdCOVIDTS <- na.approx(autoProdCOVIDTS)
+
+#Windows starting in 2019 for plotting adjusted and actual values
+autoProdCOVIDTSWindow <- window(autoProdCOVIDTS, start = 2019 + 1/12, end = 2023 + 0/12)
+autoProdTSWindow <- window(autoProdTS, start = 2019 + 1/12, end = 2023 + 0/12)
+
+#Date frame for plotting time series comparing adjusted to actual values
+dataCovidTS <- data.frame(
+  time = as.Date(time(autoProdCOVIDTSWindow)),
+  adjusted = autoProdCOVIDTSWindow,
+  actual = autoProdTSWindow
+)
+
+#Manually set colors for plot
+colors <- c("Actual" = "blue", "Adjusted" = "red")
+
+#Plot comparing adjusted values to actual values
+ggplot(dataCovidTS, aes(x = time)) +
+  geom_line(aes(y = adjusted, color = "Adjusted"), linetype = 2) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  geom_point(aes(y = adjusted, color = "Adjusted"), size = 1) +
+  geom_point(aes(y = actual, color = "Actual"), size = 1) +
+  labs(title = "Real Values Versus Smoothed Values", x = "Month/Day", y = "Value", color = "Legend") +
+  theme_classic() + 
+  theme(plot.margin = margin(40, 30, 30, 30), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(labels = date_format("%b %y"), breaks = "3 month") + 
+  scale_color_manual(values = colors)
+
+```
+
+## b. Re-run data with the original model
+
+```{r}
+
+#ACF of original data
+acf2(autoProdCOVIDTS)
+
+#Stabilize variance 
+logCarsCOVID <- log(autoProdCOVIDTS)
+
+#Check ACF after stabilizing variance
+#Needs to be detrended
+acf2(logCarsCOVID)
+
+#Remove trend
+adjustCarsCOVID <- diff(logCarsCOVID)
+
+#Check ACF/PACF
+#Non-stationary due to seasonality
+acf2(adjustCarsCOVID)
+
+#Seasonality check
+ggseasonplot(autoProdCOVIDTS)
+
+#Seasonal differencing for annual
+acf2(diff(adjustCarsCOVID,12), 60)
+
+#SARIMA model and diagnostics (original model)
+sarima(logCarsCOVID,0,1,2,0,1,1,12)
+
+#Prediction for the next 12 months using original model but with COVID outliers removal
+forecastCOVID <- sarima.for(autoProdCOVIDTS,12,0,1,2,0,1,1,12)
+
+```
+
+# 4. Compare Results Of Original Predictions to Actual and Smoothed
+
+```{r}
+
+#Select predictions only 
+predCOVID <- forecastCOVID$pred
+
+#Select only the prediction that there are actual values for (October 2022 - May 2023)
+predCOVIDValues <- window(predCOVID, start = 2022 + 09/12, end = 2023 + 4/12)
+
+dataCOVID <- data.frame(
+  time = as.Date(time(actualValues)),
+  predicted = predOriginalValues,
+  actual = actualValues,
+  covid = predCOVIDValues
+)
+
+#Manually set colors for plot
+colors <- c("Actual" = "blue", "Pre-Smoothing" = "red", "Post-Smoothing" = "green")
+
+#Plot
+ggplot(dataCOVID, aes(x = time)) +
+  geom_line(aes(y = predicted, color = "Pre-Smoothing")) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  geom_line(aes(y = covid, color = "Post-Smoothing")) +
+  geom_point(aes(y = predicted, color = "Pre-Smoothing"), size = 2) +
+  geom_point(aes(y = actual, color = "Actual"), size = 2) +
+  geom_point(aes(y = covid, color = "Post-Smoothing"), size = 2) +
+  labs(title = "A Comparison of Actual Values to Pre-Smoothing and Post-Smoothing Predictions", x = "Month/Day", y = "Auto Production (thousands)", color = "Legend") +
+  theme_classic() + 
+  theme(plot.margin = margin(40, 30, 30, 30), axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_x_date(labels = date_format("%b %y"), breaks = "1 month") + 
+  scale_color_manual(values = colors)
+```
+
+# 5. Adjust model for COVID smoothed data
+
+```{r}
+#ACF of COVID smoothed data after 
+acf2(diff(adjustCarsCOVID,12), 60)
+
+#SARIMA model and diagnostics
+sarima(logCarsCOVID,0,1,0,4,1,0,12)
+
+#Suggested model by autoarima() and diagnostics
+auto.arima(logCarsCOVID)
+sarima(logCarsCOVID,3,1,1,0,0,2,12)
+
+#None show good fit
+```
+
+# 6. Re-run original model with latest 8 months' values 
+
+```{r}
+
+#ACF of original data
+acf2(autoProdUpdateTS)
+
+#Stabilize variance 
+logCarsUpdate <- log(autoProdUpdateTS)
+acf2(logCarsUpdate)
+
+#Remove trend
+adjustCarsUpdate <- diff(logCarsUpdate)
+
+#Check ACF/PACF
+#Non-stationary due to seasonality
+acf2(adjustCarsUpdate)
+
+#Seasonality check
+ggseasonplot(autoProdUpdateTS)
+
+#Seasonal differencing
+acf2(diff(adjustCarsUpdate,12), 60)
+
+#SARIMA model and diagnostics
+sarima(logCarsUpdate,0,1,2,0,1,1,12)
+
+#Prediction for the next 12 months using original model 
+sarima.for(autoProdUpdateTS, 12,0,1,2,0,1,1,12)
+forecastUpdated <- sarima.for(autoProdUpdateTS, 12,0,1,2,0,1,1,12)
+
+```
+
+
+
+
